@@ -436,19 +436,133 @@ export async function resolveAiReply(text: string): Promise<{
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sapaan personal: AI menyusun satu kalimat sapaan memakai nama WhatsApp warga.
+// ---------------------------------------------------------------------------
+
+/** Pesan tunggu bila jawaban belum siap dalam beberapa detik. */
+export const WAIT_NOTICE = "Sebentar, saya cek informasinya dulu.";
+
+/** true bila pesan warga berupa sapaan/pembuka percakapan. */
+export function isGreeting(text: string | null | undefined): boolean {
+  return GREETINGS.has((text ?? "").trim().toLowerCase());
+}
+
+/** Nama panggilan yang wajar dari username WhatsApp (satu-dua kata pertama). */
+export function toDisplayName(name: string | null | undefined): string | null {
+  const cleaned = (name ?? "")
+    .replace(/[^\p{L}\p{N}\s.'-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (/^\+?\d[\d\s-]*$/.test(cleaned)) return null; // nomor telepon, bukan nama
+  const parts = cleaned.split(" ").slice(0, 2).join(" ");
+  return parts.length > 30 ? parts.slice(0, 30).trim() : parts;
+}
+
+/** Bagian hari menurut waktu Purworejo (WIB). */
+function timeOfDay(now = new Date()): "pagi" | "siang" | "sore" | "malam" {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      hour: "2-digit",
+      hour12: false,
+    }).format(now),
+  );
+  if (hour >= 4 && hour < 11) return "pagi";
+  if (hour >= 11 && hour < 15) return "siang";
+  if (hour >= 15 && hour < 18) return "sore";
+  return "malam";
+}
+
+function fallbackGreeting(name: string | null): string {
+  const sapaan = `Selamat ${timeOfDay()}`;
+  return name
+    ? `${sapaan}, ${name}. Ada yang bisa saya bantu hari ini?`
+    : `${sapaan}. Ada yang bisa saya bantu hari ini?`;
+}
+
+/** Sapaan personal singkat dari AI; gagal/timeout -> sapaan siap-pakai. */
+export async function resolveGreeting(name: string | null | undefined): Promise<string> {
+  const displayName = toDisplayName(name);
+  const apiKey = process.env["JTG_AI_API_KEY"];
+  if (!apiKey) return fallbackGreeting(displayName);
+
+  try {
+    const model = await pickModel(apiKey);
+    if (!model) throw new Error("Tidak ada model tersedia di ai.jtg.pro");
+
+    const res = await jtgFetch(
+      "/chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Kamu asisten chatbot resmi layanan publik Pemerintah Kabupaten Purworejo. " +
+                AI_PERSONA +
+                " Tugasmu sekarang HANYA menulis satu sapaan pembuka, maksimal dua kalimat pendek, " +
+                "tanpa daftar menu, tanpa emoji berlebihan, tanpa tanda kutip.",
+            },
+            {
+              role: "user",
+              content:
+                `Waktu setempat: ${timeOfDay()}. ` +
+                (displayName
+                  ? `Nama warga: ${displayName}. Sapa dia dengan namanya secara natural dan sopan, ` +
+                    "lalu tawarkan bantuan."
+                  : "Nama warga tidak diketahui. Sapa dengan sopan tanpa menyebut nama, lalu tawarkan bantuan."),
+            },
+          ],
+          stream: false,
+        }),
+      },
+      apiKey,
+      AI_GREETING_TIMEOUT_MS,
+    );
+    if (!res.ok) throw new Error(`ai.jtg.pro error ${res.status}`);
+    const parsed = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const answer = parsed?.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "");
+    if (!answer || answer.length > 240) throw new Error("Sapaan AI tidak layak");
+    return answer;
+  } catch (err) {
+    console.error("Sapaan AI gagal, memakai sapaan bawaan", err);
+    return fallbackGreeting(displayName);
+  }
+}
+
 /** Pilih balasan: menu angka seperti semula, selain itu cari di Knowledge Base. */
 export async function resolveReply(
   text: string | null | undefined,
   currentMenuPath: string | null = null,
+  senderName: string | null = null,
 ): Promise<{
+  messages: string[];
   reply: string;
   escalate: boolean;
-    matchedCategory?: string | null;
-    menuPath?: string | null | undefined;
-    notFound?: boolean;
-  }> {
+  matchedCategory?: string | null;
+  menuPath?: string | null | undefined;
+  notFound?: boolean;
+}> {
   if (needsAgent(text)) {
-    return { reply: AGENT_REPLY, escalate: true };
+    return { messages: [AGENT_REPLY], reply: AGENT_REPLY, escalate: true };
+  }
+
+  // Sapaan pembuka: satu pesan sapaan personal, lalu menu layanan menyusul.
+  if (isGreeting(text)) {
+    const greeting = await resolveGreeting(senderName);
+    return {
+      messages: [greeting, MAIN_MENU],
+      reply: MAIN_MENU,
+      escalate: false,
+      menuPath: null,
+    };
   }
 
   let result: {
@@ -477,7 +591,7 @@ export async function resolveReply(
   // eksplisit, sapaan, maupun fallback pesan tidak dikenali) mengosongkan posisi
   // menu, supaya nomor pendek berikutnya diartikan terhadap menu utama.
   const menuPath = result.reply.includes(MAIN_MENU) ? null : result.menuPath;
-  return { ...result, menuPath };
+  return { ...result, messages: [result.reply], menuPath };
 }
 
 /** Kirim pesan penutup/survei sekali saja untuk percakapan yang sudah ditutup. */
