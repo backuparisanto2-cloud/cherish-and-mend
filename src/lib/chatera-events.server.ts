@@ -209,6 +209,16 @@ async function handleMessageEvent(
   const text =
     str((content["text"] as Record<string, unknown> | undefined)?.["body"]) ??
     str(content["text"]) ??
+    str(
+      ((content["interactive"] as Record<string, unknown> | undefined)?.["reply"] as
+        | Record<string, unknown>
+        | undefined)?.["id"],
+    ) ??
+    str(
+      ((content["interactive"] as Record<string, unknown> | undefined)?.["list_reply"] as
+        | Record<string, unknown>
+        | undefined)?.["id"],
+    ) ??
     null;
 
   return { conversationId: str(data["conversationId"]), senderPhone, text };

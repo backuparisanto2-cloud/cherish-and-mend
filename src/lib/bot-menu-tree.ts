@@ -52,6 +52,7 @@ export function buildMenuTree(rows: BotMenuRow[]): BotMenuTree {
 }
 
 const BACK_HOME = "🏠 Ketik *0* untuk kembali ke Menu Utama";
+const HELP_HINT = "❓ Ketik *8* atau *Bantuan* jika Anda bingung";
 
 /** Teks balasan untuk satu node: pakai body, atau susun otomatis dari submenu. */
 export function renderMenu(node: BotMenuNode): string {
@@ -73,7 +74,7 @@ export function renderMenu(node: BotMenuNode): string {
   if (parentPath && parentPath !== ROOT_PATH) {
     lines.push(`🔙 Ketik *${parentPath}* untuk kembali ke menu sebelumnya`);
   }
-  lines.push(BACK_HOME);
+  lines.push(HELP_HINT, BACK_HOME);
   return lines.join("\n");
 }
 
@@ -88,11 +89,11 @@ const GREETINGS = new Set([
   "hallo",
   "hai",
   "hi",
-  "menu",
-  "0",
   "assalamualaikum",
-  "start",
 ]);
+
+const HELP_COMMANDS = new Set(["8", "help", "bantuan", "tolong"]);
+const RESET_COMMANDS = new Set(["0", "menu", "mulai", "mulai ulang", "start", "start over", "restart"]);
 
 /** Normalisasi input warga menjadi kunci menu, mis. "3 . 10 . 1" -> "3.10.1". */
 export function toMenuKey(text: string): string {
@@ -119,7 +120,7 @@ function mainMenu(tree: BotMenuTree): string | null {
 export function isMenuInputFor(tree: BotMenuTree, text: string | null | undefined): boolean {
   const normalized = (text ?? "").trim().toLowerCase();
   if (normalized === "") return true;
-  if (GREETINGS.has(normalized)) return true;
+  if (GREETINGS.has(normalized) || HELP_COMMANDS.has(normalized) || RESET_COMMANDS.has(normalized)) return true;
   const cleaned = normalized.replace(/[)\]\s]/g, "");
   if (!/^\d+(\.\d+)*$/.test(cleaned)) return false;
   const node = tree.byPath.get(cleaned);
@@ -132,7 +133,10 @@ export function resolveMenuReply(tree: BotMenuTree, text: string | null | undefi
   if (!main) return null;
 
   const normalized = (text ?? "").trim().toLowerCase();
-  if (GREETINGS.has(normalized)) return main;
+  if (GREETINGS.has(normalized) || RESET_COMMANDS.has(normalized)) return main;
+  if (HELP_COMMANDS.has(normalized)) {
+    return "❓ *Bantuan*\n\nBalas dengan angka yang tertera untuk memilih layanan. Anda juga bisa mengetik pertanyaan dengan kalimat biasa.\n\nKetik *0* atau *Mulai ulang* untuk kembali ke awal, atau ketik *7* untuk berbicara dengan petugas.";
+  }
 
   const key = toMenuKey(normalized);
   if (key === "0" || key === "") return main;

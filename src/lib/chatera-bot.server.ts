@@ -25,14 +25,26 @@ const GREETINGS = new Set([
   "selamat sore",
   "selamat malam",
   "assalamualaikum",
-  "mulai",
-  "start",
   "min",
   "admin",
   "cs",
-  "menu",
-  "0",
 ]);
+
+const HELP_COMMANDS = new Set(["8", "help", "bantuan", "tolong"]);
+const RESET_COMMANDS = new Set([
+  "0",
+  "menu",
+  "mulai",
+  "mulai ulang",
+  "start",
+  "start over",
+  "restart",
+]);
+
+export const HELP_REPLY =
+  "❓ *Bantuan*\n\n" +
+  "Balas dengan angka yang tertera untuk memilih layanan. Anda juga bisa mengetik pertanyaan dengan kalimat biasa.\n\n" +
+  "Ketik *0* atau *Mulai ulang* untuk kembali ke awal, atau ketik *7* untuk berbicara dengan petugas.";
 
 const UNKNOWN_PREFIX =
   "Maaf, pilihan tidak dikenali. Silakan pilih salah satu menu berikut.\n\n";
@@ -111,6 +123,10 @@ export function resolveAutoReply(
   currentMenuPath: string | null = null,
 ): AutoReply {
   const normalized = (text ?? "").trim().toLowerCase();
+  if (HELP_COMMANDS.has(normalized)) {
+    return { reply: HELP_REPLY, menuPath: currentMenuPath };
+  }
+  if (RESET_COMMANDS.has(normalized)) return { reply: MAIN_MENU, menuPath: null };
   if (GREETINGS.has(normalized)) return { reply: MAIN_MENU, menuPath: null };
 
   const key = toMenuKey(normalized);
@@ -170,7 +186,9 @@ export function isMenuInput(
 ): boolean {
   const normalized = (text ?? "").trim().toLowerCase();
   if (normalized === "") return true;
-  if (GREETINGS.has(normalized)) return true;
+  if (GREETINGS.has(normalized) || HELP_COMMANDS.has(normalized) || RESET_COMMANDS.has(normalized)) {
+    return true;
+  }
   const cleaned = normalized.replace(/[)\]\s]/g, "");
   // Semua input berupa angka ditangani navigasi menu (termasuk angka yang tidak
   // ditawarkan di layar aktif -> dijawab "pilihan tidak dikenali" + menu ulang).
@@ -453,6 +471,14 @@ export function isGreeting(text: string | null | undefined): boolean {
   return GREETINGS.has((text ?? "").trim().toLowerCase());
 }
 
+export function isHelpRequest(text: string | null | undefined): boolean {
+  return HELP_COMMANDS.has((text ?? "").trim().toLowerCase());
+}
+
+export function isStartOverRequest(text: string | null | undefined): boolean {
+  return RESET_COMMANDS.has((text ?? "").trim().toLowerCase());
+}
+
 /** Nama panggilan yang wajar dari username WhatsApp (satu-dua kata pertama). */
 export function toDisplayName(name: string | null | undefined): string | null {
   const cleaned = (name ?? "")
@@ -484,7 +510,7 @@ function fallbackGreeting(name: string | null): string {
   const sapaan = `Selamat ${timeOfDay()}`;
   return name
     ? `${sapaan}, ${name}. Ada yang bisa saya bantu hari ini?`
-    : `${sapaan}. Ada yang bisa saya bantu hari ini?`;
+    : `Halo, ${sapaan.toLowerCase()}. Saya siap membantu—layanan apa yang Anda perlukan?`;
 }
 
 /** Sapaan personal singkat dari AI; gagal/timeout -> sapaan siap-pakai. */
@@ -557,6 +583,24 @@ export async function resolveReply(
 }> {
   if (needsAgent(text)) {
     return { messages: [AGENT_REPLY], reply: AGENT_REPLY, escalate: true };
+  }
+
+  if (isStartOverRequest(text)) {
+    return {
+      messages: [MAIN_MENU],
+      reply: MAIN_MENU,
+      escalate: false,
+      menuPath: null,
+    };
+  }
+
+  if (isHelpRequest(text)) {
+    return {
+      messages: [HELP_REPLY],
+      reply: HELP_REPLY,
+      escalate: false,
+      menuPath: currentMenuPath,
+    };
   }
 
   // Sapaan pembuka: satu pesan sapaan personal, lalu menu layanan menyusul.
@@ -645,6 +689,40 @@ type SendContext = {
   matchedCategory?: string | null;
 };
 
+const SERVICE_MENU_INTERACTIVE = {
+  type: "list",
+  header: { type: "text", text: "Layanan Purworejo" },
+  body: { text: "Silakan pilih layanan yang Anda butuhkan. Anda juga bisa mengetik pertanyaan langsung." },
+  footer: { text: "Pilih satu opsi atau balas angkanya" },
+  action: {
+    button: "Pilih Layanan",
+    sections: [
+      {
+        title: "Layanan",
+        rows: [
+          { id: "1", title: "1. Aduan & Aspirasi", description: "PORJO dan layanan pengaduan warga" },
+          { id: "2", title: "2. Layanan Kesehatan", description: "RSUD dan Puskesmas" },
+          { id: "3", title: "3. Kependudukan", description: "KK, KIA, pindah, dan dokumen warga" },
+          { id: "4", title: "4. Perizinan & Usaha", description: "DPMPTSP dan layanan perizinan" },
+          { id: "5", title: "5. Pajak Daerah", description: "PBB dan layanan pajak daerah" },
+          { id: "6", title: "6. CCTV Purworejo", description: "Pantau CCTV publik melalui Lekjo" },
+          { id: "7", title: "7. Hubungi Operator", description: "Bicara dengan petugas layanan" },
+          { id: "8", title: "8. Bantuan", description: "Panduan memilih dan memakai layanan" },
+          { id: "0", title: "0. Mulai Ulang", description: "Kembali ke menu layanan awal" },
+        ],
+      },
+    ],
+  },
+} as const;
+
+function outboundBody(ctx: SendContext): Record<string, unknown> {
+  const channel = ctx.channelId ? { channel_id: ctx.channelId } : {};
+  if (ctx.text === MAIN_MENU) {
+    return { type: "interactive", to: ctx.to, ...channel, interactive: SERVICE_MENU_INTERACTIVE };
+  }
+  return { type: "text", to: ctx.to, ...channel, text: { body: ctx.text } };
+}
+
 /** Kirim balasan lewat Chatera API lalu simpan sebagai pesan outbound. */
 export async function sendBotReply(ctx: SendContext): Promise<void> {
   const apiKey = process.env["CHATERA_API_KEY"];
@@ -655,12 +733,27 @@ export async function sendBotReply(ctx: SendContext): Promise<void> {
 
   let messageId: string | null = null;
   try {
-    const response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
+    let response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ type: "text", to: ctx.to, text: { body: ctx.text } }),
+      body: JSON.stringify(outboundBody(ctx)),
     });
-    const raw = await response.text();
+    let raw = await response.text();
+    // Jika pesan interaktif ditolak oleh kanal lama, menu teks tetap dikirim agar
+    // warga tidak kehilangan navigasi.
+    if (!response.ok && ctx.text === MAIN_MENU) {
+      response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          type: "text",
+          to: ctx.to,
+          ...(ctx.channelId ? { channel_id: ctx.channelId } : {}),
+          text: { body: ctx.text },
+        }),
+      });
+      raw = await response.text();
+    }
     if (!response.ok) {
       console.error("Auto-reply gagal dikirim", response.status, raw.slice(0, 500));
       return;
