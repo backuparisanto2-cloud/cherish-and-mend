@@ -706,3 +706,53 @@ export async function sendBotReply(ctx: SendContext): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Efek mengetik: jeda singkat & proporsional sebelum tiap pesan bot.
+// ---------------------------------------------------------------------------
+
+const TYPING_MS_PER_CHAR = 35;
+const TYPING_MIN_MS = 500;
+const TYPING_MAX_MS = 2_500;
+
+/** Lama "sedang mengetik" untuk sebuah pesan, proporsional dengan panjangnya. */
+export function typingDelayFor(text: string): number {
+  const length = (text ?? "").trim().length;
+  return Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, length * TYPING_MS_PER_CHAR));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Kirim sinyal "sedang mengetik" ke WhatsApp bila Chatera mendukung. */
+async function sendTypingIndicator(to: string, apiKey: string): Promise<void> {
+  try {
+    const res = await fetch(`${CHATERA_BASE_URL}/whatsapp/typing`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ to, state: "typing" }),
+    });
+    if (!res.ok && res.status !== 404 && res.status !== 405) {
+      console.warn("Sinyal mengetik ditolak Chatera", res.status);
+    }
+  } catch {
+    // Endpoint typing opsional: efek tetap terasa lewat jeda antar pesan.
+  }
+}
+
+/** Kirim beberapa pesan berurutan dengan jeda mengetik yang wajar. */
+export async function sendBotMessages(
+  ctx: Omit<SendContext, "text">,
+  messages: string[],
+): Promise<void> {
+  const apiKey = process.env["CHATERA_API_KEY"];
+  const list = messages.filter((m) => (m ?? "").trim().length > 0);
+  for (let i = 0; i < list.length; i++) {
+    const text = list[i]!;
+    if (apiKey) await sendTypingIndicator(ctx.to, apiKey);
+    await sleep(typingDelayFor(text));
+    await sendBotReply({ ...ctx, text });
+  }
+}
+
+
