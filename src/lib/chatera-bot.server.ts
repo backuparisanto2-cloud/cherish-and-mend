@@ -307,11 +307,24 @@ export async function resolveKnowledgeReply(
 // ---------------------------------------------------------------------------
 
 const JTG_BASE_URL = "https://ai.jtg.pro/api";
-const AI_TIMEOUT_MS = 10_000;
+const AI_TIMEOUT_MS = 7_000;
+const AI_GREETING_TIMEOUT_MS = 4_000;
+
+/** "Soul" chatbot: humble, jelas, melayani. Dipakai di semua jawaban AI. */
+export const AI_PERSONA =
+  "Karaktermu: HUMBLE (rendah hati, ramah, tidak menggurui, tidak sok tahu), " +
+  "JELAS (akurat, mudah dipahami, terstruktur, tidak bertele-tele), " +
+  "MELAYANI (responsif, sabar, solutif, berorientasi pada kebutuhan warga). " +
+  "Gaya bahasa: Bahasa Indonesia sehari-hari yang sederhana, hangat, dan sopan; " +
+  "jangan terdengar seperti template atau membaca naskah. " +
+  "Panjang jawaban proporsional: pertanyaan singkat dijawab singkat. " +
+  "Tutup dengan satu kalimat ajakan lanjut yang wajar supaya percakapan tidak menggantung.";
+
 const AI_SYSTEM_PROMPT =
   "Kamu asisten chatbot resmi layanan publik Pemerintah Kabupaten Purworejo. " +
-  "Jawab HANYA berdasarkan informasi yang diberikan, singkat (di bawah 500 karakter), " +
-  "sopan, Bahasa Indonesia. Kalau info tidak tersedia, katakan akan disambungkan ke petugas.";
+  AI_PERSONA +
+  " Jawab HANYA berdasarkan informasi yang diberikan, singkat (di bawah 500 karakter). " +
+  "Kalau info tidak tersedia, katakan akan disambungkan ke petugas.";
 
 export type BotEngine = "keyword" | "ai_external";
 
