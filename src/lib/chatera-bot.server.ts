@@ -307,11 +307,24 @@ export async function resolveKnowledgeReply(
 // ---------------------------------------------------------------------------
 
 const JTG_BASE_URL = "https://ai.jtg.pro/api";
-const AI_TIMEOUT_MS = 10_000;
+const AI_TIMEOUT_MS = 7_000;
+const AI_GREETING_TIMEOUT_MS = 4_000;
+
+/** "Soul" chatbot: humble, jelas, melayani. Dipakai di semua jawaban AI. */
+export const AI_PERSONA =
+  "Karaktermu: HUMBLE (rendah hati, ramah, tidak menggurui, tidak sok tahu), " +
+  "JELAS (akurat, mudah dipahami, terstruktur, tidak bertele-tele), " +
+  "MELAYANI (responsif, sabar, solutif, berorientasi pada kebutuhan warga). " +
+  "Gaya bahasa: Bahasa Indonesia sehari-hari yang sederhana, hangat, dan sopan; " +
+  "jangan terdengar seperti template atau membaca naskah. " +
+  "Panjang jawaban proporsional: pertanyaan singkat dijawab singkat. " +
+  "Tutup dengan satu kalimat ajakan lanjut yang wajar supaya percakapan tidak menggantung.";
+
 const AI_SYSTEM_PROMPT =
   "Kamu asisten chatbot resmi layanan publik Pemerintah Kabupaten Purworejo. " +
-  "Jawab HANYA berdasarkan informasi yang diberikan, singkat (di bawah 500 karakter), " +
-  "sopan, Bahasa Indonesia. Kalau info tidak tersedia, katakan akan disambungkan ke petugas.";
+  AI_PERSONA +
+  " Jawab HANYA berdasarkan informasi yang diberikan, singkat (di bawah 500 karakter). " +
+  "Kalau info tidak tersedia, katakan akan disambungkan ke petugas.";
 
 export type BotEngine = "keyword" | "ai_external";
 
@@ -334,9 +347,14 @@ export async function getBotEngine(): Promise<BotEngine> {
   }
 }
 
-async function jtgFetch(path: string, init: RequestInit, apiKey: string): Promise<Response> {
+async function jtgFetch(
+  path: string,
+  init: RequestInit,
+  apiKey: string,
+  timeoutMs: number = AI_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(`${JTG_BASE_URL}${path}`, {
       ...init,
@@ -423,19 +441,133 @@ export async function resolveAiReply(text: string): Promise<{
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sapaan personal: AI menyusun satu kalimat sapaan memakai nama WhatsApp warga.
+// ---------------------------------------------------------------------------
+
+/** Pesan tunggu bila jawaban belum siap dalam beberapa detik. */
+export const WAIT_NOTICE = "Sebentar, saya cek informasinya dulu.";
+
+/** true bila pesan warga berupa sapaan/pembuka percakapan. */
+export function isGreeting(text: string | null | undefined): boolean {
+  return GREETINGS.has((text ?? "").trim().toLowerCase());
+}
+
+/** Nama panggilan yang wajar dari username WhatsApp (satu-dua kata pertama). */
+export function toDisplayName(name: string | null | undefined): string | null {
+  const cleaned = (name ?? "")
+    .replace(/[^\p{L}\p{N}\s.'-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (/^\+?\d[\d\s-]*$/.test(cleaned)) return null; // nomor telepon, bukan nama
+  const parts = cleaned.split(" ").slice(0, 2).join(" ");
+  return parts.length > 30 ? parts.slice(0, 30).trim() : parts;
+}
+
+/** Bagian hari menurut waktu Purworejo (WIB). */
+function timeOfDay(now = new Date()): "pagi" | "siang" | "sore" | "malam" {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      hour: "2-digit",
+      hour12: false,
+    }).format(now),
+  );
+  if (hour >= 4 && hour < 11) return "pagi";
+  if (hour >= 11 && hour < 15) return "siang";
+  if (hour >= 15 && hour < 18) return "sore";
+  return "malam";
+}
+
+function fallbackGreeting(name: string | null): string {
+  const sapaan = `Selamat ${timeOfDay()}`;
+  return name
+    ? `${sapaan}, ${name}. Ada yang bisa saya bantu hari ini?`
+    : `${sapaan}. Ada yang bisa saya bantu hari ini?`;
+}
+
+/** Sapaan personal singkat dari AI; gagal/timeout -> sapaan siap-pakai. */
+export async function resolveGreeting(name: string | null | undefined): Promise<string> {
+  const displayName = toDisplayName(name);
+  const apiKey = process.env["JTG_AI_API_KEY"];
+  if (!apiKey) return fallbackGreeting(displayName);
+
+  try {
+    const model = await pickModel(apiKey);
+    if (!model) throw new Error("Tidak ada model tersedia di ai.jtg.pro");
+
+    const res = await jtgFetch(
+      "/chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Kamu asisten chatbot resmi layanan publik Pemerintah Kabupaten Purworejo. " +
+                AI_PERSONA +
+                " Tugasmu sekarang HANYA menulis satu sapaan pembuka, maksimal dua kalimat pendek, " +
+                "tanpa daftar menu, tanpa emoji berlebihan, tanpa tanda kutip.",
+            },
+            {
+              role: "user",
+              content:
+                `Waktu setempat: ${timeOfDay()}. ` +
+                (displayName
+                  ? `Nama warga: ${displayName}. Sapa dia dengan namanya secara natural dan sopan, ` +
+                    "lalu tawarkan bantuan."
+                  : "Nama warga tidak diketahui. Sapa dengan sopan tanpa menyebut nama, lalu tawarkan bantuan."),
+            },
+          ],
+          stream: false,
+        }),
+      },
+      apiKey,
+      AI_GREETING_TIMEOUT_MS,
+    );
+    if (!res.ok) throw new Error(`ai.jtg.pro error ${res.status}`);
+    const parsed = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const answer = parsed?.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "");
+    if (!answer || answer.length > 240) throw new Error("Sapaan AI tidak layak");
+    return answer;
+  } catch (err) {
+    console.error("Sapaan AI gagal, memakai sapaan bawaan", err);
+    return fallbackGreeting(displayName);
+  }
+}
+
 /** Pilih balasan: menu angka seperti semula, selain itu cari di Knowledge Base. */
 export async function resolveReply(
   text: string | null | undefined,
   currentMenuPath: string | null = null,
+  senderName: string | null = null,
 ): Promise<{
+  messages: string[];
   reply: string;
   escalate: boolean;
-    matchedCategory?: string | null;
-    menuPath?: string | null | undefined;
-    notFound?: boolean;
-  }> {
+  matchedCategory?: string | null;
+  menuPath?: string | null | undefined;
+  notFound?: boolean;
+}> {
   if (needsAgent(text)) {
-    return { reply: AGENT_REPLY, escalate: true };
+    return { messages: [AGENT_REPLY], reply: AGENT_REPLY, escalate: true };
+  }
+
+  // Sapaan pembuka: satu pesan sapaan personal, lalu menu layanan menyusul.
+  if (isGreeting(text)) {
+    const greeting = await resolveGreeting(senderName);
+    return {
+      messages: [greeting, MAIN_MENU],
+      reply: MAIN_MENU,
+      escalate: false,
+      menuPath: null,
+    };
   }
 
   let result: {
@@ -464,7 +596,7 @@ export async function resolveReply(
   // eksplisit, sapaan, maupun fallback pesan tidak dikenali) mengosongkan posisi
   // menu, supaya nomor pendek berikutnya diartikan terhadap menu utama.
   const menuPath = result.reply.includes(MAIN_MENU) ? null : result.menuPath;
-  return { ...result, menuPath };
+  return { ...result, messages: [result.reply], menuPath };
 }
 
 /** Kirim pesan penutup/survei sekali saja untuk percakapan yang sudah ditutup. */
@@ -573,4 +705,54 @@ export async function sendBotReply(ctx: SendContext): Promise<void> {
     console.error("Gagal menyimpan balasan bot", err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Efek mengetik: jeda singkat & proporsional sebelum tiap pesan bot.
+// ---------------------------------------------------------------------------
+
+const TYPING_MS_PER_CHAR = 35;
+const TYPING_MIN_MS = 500;
+const TYPING_MAX_MS = 2_500;
+
+/** Lama "sedang mengetik" untuk sebuah pesan, proporsional dengan panjangnya. */
+export function typingDelayFor(text: string): number {
+  const length = (text ?? "").trim().length;
+  return Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, length * TYPING_MS_PER_CHAR));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Kirim sinyal "sedang mengetik" ke WhatsApp bila Chatera mendukung. */
+async function sendTypingIndicator(to: string, apiKey: string): Promise<void> {
+  try {
+    const res = await fetch(`${CHATERA_BASE_URL}/whatsapp/typing`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ to, state: "typing" }),
+    });
+    if (!res.ok && res.status !== 404 && res.status !== 405) {
+      console.warn("Sinyal mengetik ditolak Chatera", res.status);
+    }
+  } catch {
+    // Endpoint typing opsional: efek tetap terasa lewat jeda antar pesan.
+  }
+}
+
+/** Kirim beberapa pesan berurutan dengan jeda mengetik yang wajar. */
+export async function sendBotMessages(
+  ctx: Omit<SendContext, "text">,
+  messages: string[],
+): Promise<void> {
+  const apiKey = process.env["CHATERA_API_KEY"];
+  const list = messages.filter((m) => (m ?? "").trim().length > 0);
+  for (let i = 0; i < list.length; i++) {
+    const text = list[i]!;
+    if (apiKey) await sendTypingIndicator(ctx.to, apiKey);
+    await sleep(typingDelayFor(text));
+    await sendBotReply({ ...ctx, text });
+  }
+}
+
 
