@@ -25,14 +25,26 @@ const GREETINGS = new Set([
   "selamat sore",
   "selamat malam",
   "assalamualaikum",
-  "mulai",
-  "start",
   "min",
   "admin",
   "cs",
-  "menu",
-  "0",
 ]);
+
+const HELP_COMMANDS = new Set(["8", "help", "bantuan", "tolong"]);
+const RESET_COMMANDS = new Set([
+  "0",
+  "menu",
+  "mulai",
+  "mulai ulang",
+  "start",
+  "start over",
+  "restart",
+]);
+
+export const HELP_REPLY =
+  "❓ *Bantuan*\n\n" +
+  "Balas dengan angka yang tertera untuk memilih layanan. Anda juga bisa mengetik pertanyaan dengan kalimat biasa.\n\n" +
+  "Ketik *0* atau *Mulai ulang* untuk kembali ke awal, atau ketik *7* untuk berbicara dengan petugas.";
 
 const UNKNOWN_PREFIX =
   "Maaf, pilihan tidak dikenali. Silakan pilih salah satu menu berikut.\n\n";
@@ -111,6 +123,10 @@ export function resolveAutoReply(
   currentMenuPath: string | null = null,
 ): AutoReply {
   const normalized = (text ?? "").trim().toLowerCase();
+  if (HELP_COMMANDS.has(normalized)) {
+    return { reply: HELP_REPLY, menuPath: currentMenuPath };
+  }
+  if (RESET_COMMANDS.has(normalized)) return { reply: MAIN_MENU, menuPath: null };
   if (GREETINGS.has(normalized)) return { reply: MAIN_MENU, menuPath: null };
 
   const key = toMenuKey(normalized);
@@ -170,7 +186,9 @@ export function isMenuInput(
 ): boolean {
   const normalized = (text ?? "").trim().toLowerCase();
   if (normalized === "") return true;
-  if (GREETINGS.has(normalized)) return true;
+  if (GREETINGS.has(normalized) || HELP_COMMANDS.has(normalized) || RESET_COMMANDS.has(normalized)) {
+    return true;
+  }
   const cleaned = normalized.replace(/[)\]\s]/g, "");
   // Semua input berupa angka ditangani navigasi menu (termasuk angka yang tidak
   // ditawarkan di layar aktif -> dijawab "pilihan tidak dikenali" + menu ulang).
@@ -453,6 +471,14 @@ export function isGreeting(text: string | null | undefined): boolean {
   return GREETINGS.has((text ?? "").trim().toLowerCase());
 }
 
+export function isHelpRequest(text: string | null | undefined): boolean {
+  return HELP_COMMANDS.has((text ?? "").trim().toLowerCase());
+}
+
+export function isStartOverRequest(text: string | null | undefined): boolean {
+  return RESET_COMMANDS.has((text ?? "").trim().toLowerCase());
+}
+
 /** Nama panggilan yang wajar dari username WhatsApp (satu-dua kata pertama). */
 export function toDisplayName(name: string | null | undefined): string | null {
   const cleaned = (name ?? "")
@@ -484,7 +510,7 @@ function fallbackGreeting(name: string | null): string {
   const sapaan = `Selamat ${timeOfDay()}`;
   return name
     ? `${sapaan}, ${name}. Ada yang bisa saya bantu hari ini?`
-    : `${sapaan}. Ada yang bisa saya bantu hari ini?`;
+    : `Halo, ${sapaan.toLowerCase()}. Saya siap membantu—layanan apa yang Anda perlukan?`;
 }
 
 /** Sapaan personal singkat dari AI; gagal/timeout -> sapaan siap-pakai. */
@@ -557,6 +583,24 @@ export async function resolveReply(
 }> {
   if (needsAgent(text)) {
     return { messages: [AGENT_REPLY], reply: AGENT_REPLY, escalate: true };
+  }
+
+  if (isStartOverRequest(text)) {
+    return {
+      messages: [MAIN_MENU],
+      reply: MAIN_MENU,
+      escalate: false,
+      menuPath: null,
+    };
+  }
+
+  if (isHelpRequest(text)) {
+    return {
+      messages: [HELP_REPLY],
+      reply: HELP_REPLY,
+      escalate: false,
+      menuPath: currentMenuPath,
+    };
   }
 
   // Sapaan pembuka: satu pesan sapaan personal, lalu menu layanan menyusul.
