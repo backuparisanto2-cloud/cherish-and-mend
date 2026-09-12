@@ -192,7 +192,7 @@ export async function handleChateraWebhook(request: Request): Promise<Response> 
     conversationStatus !== "agent_active" &&
     conversationStatus !== "waiting_agent";
   if (inbound?.senderPhone && botShouldReply) {
-    const { resolveReply, sendBotReply, isAffirmativeReply, AGENT_REPLY } =
+    const { resolveReply, sendBotReply, sendBotMessages, isAffirmativeReply, AGENT_REPLY, WAIT_NOTICE } =
       await import("@/lib/chatera-bot.server");
 
     // Balasan "ya" tepat setelah pesan tidak ditemukan = setuju disambungkan
@@ -200,18 +200,55 @@ export async function handleChateraWebhook(request: Request): Promise<Response> 
     const confirmedOperator =
       awaitingOperatorConfirmation && isAffirmativeReply(inbound.text);
 
-    const { reply, escalate, matchedCategory, menuPath, notFound } =
-      confirmedOperator
-        ? { reply: AGENT_REPLY, escalate: true, matchedCategory: null, menuPath: undefined, notFound: false }
-        : await resolveReply(inbound.text, currentMenuPath);
+    // Nama WhatsApp warga untuk sapaan personal (payload -> fallback kontak).
+    let senderName: string | null = data.sender?.name ?? null;
+    if (!senderName && inbound.senderPhone) {
+      const { data: contact } = await supabaseAdmin
+        .from("contacts")
+        .select("name")
+        .eq("wa_number", inbound.senderPhone)
+        .maybeSingle();
+      senderName = (contact as { name?: string | null } | null)?.name ?? null;
+    }
 
-    await sendBotReply({
-      to: inbound.senderPhone,
-      text: reply,
-      conversationId: inbound.conversationId,
-      channelId: inbound.channelId,
-      matchedCategory: matchedCategory ?? null,
-    });
+    let result: {
+      messages: string[];
+      escalate: boolean;
+      matchedCategory?: string | null;
+      menuPath?: string | null | undefined;
+      notFound?: boolean;
+    };
+    if (confirmedOperator) {
+      result = { messages: [AGENT_REPLY], escalate: true, matchedCategory: null, menuPath: undefined, notFound: false };
+    } else {
+      const pending = resolveReply(inbound.text, currentMenuPath, senderName);
+      // Kalau jawaban belum siap dalam 3 detik, warga lebih dulu diberi kabar
+      // supaya tidak merasa dibiarkan menunggu.
+      const race = await Promise.race([
+        pending.then(() => "ready" as const),
+        new Promise<"slow">((resolve) => setTimeout(() => resolve("slow"), 3_000)),
+      ]);
+      if (race === "slow") {
+        await sendBotReply({
+          to: inbound.senderPhone,
+          text: WAIT_NOTICE,
+          conversationId: inbound.conversationId,
+          channelId: inbound.channelId,
+        });
+      }
+      result = await pending;
+    }
+    const { escalate, matchedCategory, menuPath, notFound } = result;
+
+    await sendBotMessages(
+      {
+        to: inbound.senderPhone,
+        conversationId: inbound.conversationId,
+        channelId: inbound.channelId,
+        matchedCategory: matchedCategory ?? null,
+      },
+      result.messages,
+    );
     autoReplied = true;
 
     if (inbound.conversationId) {
