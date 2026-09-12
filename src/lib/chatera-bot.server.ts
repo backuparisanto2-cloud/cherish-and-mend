@@ -689,6 +689,40 @@ type SendContext = {
   matchedCategory?: string | null;
 };
 
+const SERVICE_MENU_INTERACTIVE = {
+  type: "list",
+  header: { type: "text", text: "Layanan Purworejo" },
+  body: { text: "Silakan pilih layanan yang Anda butuhkan. Anda juga bisa mengetik pertanyaan langsung." },
+  footer: { text: "Pilih satu opsi atau balas angkanya" },
+  action: {
+    button: "Pilih Layanan",
+    sections: [
+      {
+        title: "Layanan",
+        rows: [
+          { id: "1", title: "1. Aduan & Aspirasi", description: "PORJO dan layanan pengaduan warga" },
+          { id: "2", title: "2. Layanan Kesehatan", description: "RSUD dan Puskesmas" },
+          { id: "3", title: "3. Kependudukan", description: "KK, KIA, pindah, dan dokumen warga" },
+          { id: "4", title: "4. Perizinan & Usaha", description: "DPMPTSP dan layanan perizinan" },
+          { id: "5", title: "5. Pajak Daerah", description: "PBB dan layanan pajak daerah" },
+          { id: "6", title: "6. CCTV Purworejo", description: "Pantau CCTV publik melalui Lekjo" },
+          { id: "7", title: "7. Hubungi Operator", description: "Bicara dengan petugas layanan" },
+          { id: "8", title: "8. Bantuan", description: "Panduan memilih dan memakai layanan" },
+          { id: "0", title: "0. Mulai Ulang", description: "Kembali ke menu layanan awal" },
+        ],
+      },
+    ],
+  },
+} as const;
+
+function outboundBody(ctx: SendContext): Record<string, unknown> {
+  const channel = ctx.channelId ? { channel_id: ctx.channelId } : {};
+  if (ctx.text === MAIN_MENU) {
+    return { type: "interactive", to: ctx.to, ...channel, interactive: SERVICE_MENU_INTERACTIVE };
+  }
+  return { type: "text", to: ctx.to, ...channel, text: { body: ctx.text } };
+}
+
 /** Kirim balasan lewat Chatera API lalu simpan sebagai pesan outbound. */
 export async function sendBotReply(ctx: SendContext): Promise<void> {
   const apiKey = process.env["CHATERA_API_KEY"];
@@ -699,12 +733,27 @@ export async function sendBotReply(ctx: SendContext): Promise<void> {
 
   let messageId: string | null = null;
   try {
-    const response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
+    let response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ type: "text", to: ctx.to, text: { body: ctx.text } }),
+      body: JSON.stringify(outboundBody(ctx)),
     });
-    const raw = await response.text();
+    let raw = await response.text();
+    // Jika pesan interaktif ditolak oleh kanal lama, menu teks tetap dikirim agar
+    // warga tidak kehilangan navigasi.
+    if (!response.ok && ctx.text === MAIN_MENU) {
+      response = await fetch(`${CHATERA_BASE_URL}/whatsapp/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          type: "text",
+          to: ctx.to,
+          ...(ctx.channelId ? { channel_id: ctx.channelId } : {}),
+          text: { body: ctx.text },
+        }),
+      });
+      raw = await response.text();
+    }
     if (!response.ok) {
       console.error("Auto-reply gagal dikirim", response.status, raw.slice(0, 500));
       return;
