@@ -347,9 +347,14 @@ export async function getBotEngine(): Promise<BotEngine> {
   }
 }
 
-async function jtgFetch(path: string, init: RequestInit, apiKey: string): Promise<Response> {
+async function jtgFetch(
+  path: string,
+  init: RequestInit,
+  apiKey: string,
+  timeoutMs: number = AI_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(`${JTG_BASE_URL}${path}`, {
       ...init,
